@@ -25,7 +25,8 @@ from strategy.signals.signal_generator import SignalGenerator
 # Import database
 from data.storage.database import db_manager
 from data.storage.models import (
-    Trade, OrderbookSnapshot, CVDSnapshot, Signal
+    Trade, OrderbookSnapshot, CVDSnapshot, Signal,
+    TradeIntensity, FuturesBasis, FundingRateMetrics
 )
 
 
@@ -334,11 +335,21 @@ class LiveSignalTrader:
                     self.save_cvd_snapshot()
                     self.last_cvd_snapshot_time = now
 
-                # Generate signal
+                # Fetch additional signal data from database
+                spread_pct = self.get_latest_spread()
+                trade_intensity = self.get_latest_trade_intensity()
+                futures_basis_pct = self.get_latest_futures_basis()
+                funding_rate = self.get_latest_funding_rate()
+
+                # Generate signal with all 6 data sources
                 signal = self.signal_generator.generate_signal(
                     cvd=self.coinbase_cvd,
                     orderbook_imbalance=self.kraken_imbalance,
-                    price=self.current_price
+                    price=self.current_price,
+                    spread_pct=spread_pct,
+                    trade_intensity=trade_intensity,
+                    futures_basis_pct=futures_basis_pct,
+                    funding_rate=funding_rate
                 )
 
                 # Print signal
@@ -349,6 +360,66 @@ class LiveSignalTrader:
 
             except Exception as e:
                 logger.error(f"Error generating signal: {e}")
+
+    def get_latest_spread(self):
+        """Fetch latest spread from orderbook snapshots"""
+        try:
+            with db_manager.get_session() as session:
+                snapshot = session.query(OrderbookSnapshot).filter(
+                    OrderbookSnapshot.exchange == 'kraken'
+                ).order_by(OrderbookSnapshot.timestamp.desc()).first()
+
+                if snapshot and snapshot.spread_pct:
+                    return float(snapshot.spread_pct)
+        except Exception as e:
+            logger.error(f"Error fetching spread: {e}")
+        return None
+
+    def get_latest_trade_intensity(self):
+        """Fetch latest trade intensity metrics"""
+        try:
+            with db_manager.get_session() as session:
+                intensity = session.query(TradeIntensity).filter(
+                    TradeIntensity.exchange == 'coinbase'
+                ).order_by(TradeIntensity.timestamp.desc()).first()
+
+                if intensity:
+                    return {
+                        'tps': float(intensity.trades_per_sec_60s),
+                        'aggression_score': float(intensity.aggression_score),
+                        'buy_sell_ratio': float(intensity.buy_sell_ratio)
+                    }
+        except Exception as e:
+            logger.error(f"Error fetching trade intensity: {e}")
+        return None
+
+    def get_latest_futures_basis(self):
+        """Fetch latest futures basis"""
+        try:
+            with db_manager.get_session() as session:
+                basis = session.query(FuturesBasis).order_by(
+                    FuturesBasis.timestamp.desc()
+                ).first()
+
+                if basis and basis.basis_pct:
+                    return float(basis.basis_pct)
+        except Exception as e:
+            logger.error(f"Error fetching futures basis: {e}")
+        return None
+
+    def get_latest_funding_rate(self):
+        """Fetch latest funding rate"""
+        try:
+            with db_manager.get_session() as session:
+                funding = session.query(FundingRateMetrics).order_by(
+                    FundingRateMetrics.timestamp.desc()
+                ).first()
+
+                if funding:
+                    return float(funding.funding_rate)
+        except Exception as e:
+            logger.error(f"Error fetching funding rate: {e}")
+        return None
 
     def save_cvd_snapshot(self):
         """Save CVD snapshot to database"""
@@ -383,11 +454,20 @@ class LiveSignalTrader:
                     warnings=signal.warnings if signal.warnings else [],
                     exchange='coinbase',
                     symbol='BTC-USD',
-                    strategy_name='CVD_Imbalance_Strategy',
+                    strategy_name='Multi_Signal_Strategy',
                     extra_metadata={
                         'signal_interval': self.signal_interval_seconds,
                         'trades_saved': self.trades_saved,
-                        'orderbooks_saved': self.orderbooks_saved
+                        'orderbooks_saved': self.orderbooks_saved,
+                        'spread_pct': float(signal.spread_pct) if signal.spread_pct is not None else None,
+                        'spread_signal': signal.spread_signal,
+                        'trade_intensity_tps': float(signal.trade_intensity_tps) if signal.trade_intensity_tps is not None else None,
+                        'trade_intensity_aggression': float(signal.trade_intensity_aggression) if signal.trade_intensity_aggression is not None else None,
+                        'intensity_signal': signal.intensity_signal,
+                        'futures_basis_pct': float(signal.futures_basis_pct) if signal.futures_basis_pct is not None else None,
+                        'basis_signal': signal.basis_signal,
+                        'funding_rate': float(signal.funding_rate) if signal.funding_rate is not None else None,
+                        'funding_rate_signal': signal.funding_rate_signal
                     }
                 )
                 session.add(db_signal)

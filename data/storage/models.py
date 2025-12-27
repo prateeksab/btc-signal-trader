@@ -7,7 +7,7 @@ ORM models for the BTC Signal Trader database.
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, BigInteger, String, DECIMAL, Boolean,
-    TIMESTAMP, Text, ForeignKey, Index, JSON
+    TIMESTAMP, Text, ForeignKey, Index, JSON, UniqueConstraint
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -607,3 +607,121 @@ class SpotPriceSnapshot(Base):
 
     def __repr__(self):
         return f"<SpotPriceSnapshot(source={self.source}, price=${self.price})>"
+
+
+class KalshiOrderbookSnapshot(Base):
+    """Kalshi market orderbook snapshots"""
+    __tablename__ = 'kalshi_orderbook_snapshots'
+
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Timestamp
+    timestamp = Column(TIMESTAMP, nullable=False, index=True)
+
+    # Market identification
+    ticker = Column(String(100), nullable=False, index=True)
+    event_ticker = Column(String(100))
+    strike_price = Column(DECIMAL(18, 8), index=True)
+
+    # Current BTC spot price at time of snapshot
+    current_btc_price = Column(DECIMAL(18, 8), nullable=False)
+    btc_price_source = Column(String(50), nullable=False)  # 'coinbase_trade', 'kalshi_implied', etc.
+
+    # Derived metrics
+    distance_from_current = Column(DECIMAL(18, 8))  # strike_price - current_btc_price (+ = above, - = below)
+    moneyness_pct = Column(DECIMAL(10, 4))  # (strike_price / current_btc_price - 1) * 100
+    moneyness_category = Column(String(20))  # 'ITM', 'ATM', 'OTM'
+
+    # Best bid/ask prices (in cents, 0-100)
+    best_yes_bid = Column(DECIMAL(10, 4))
+    best_yes_ask = Column(DECIMAL(10, 4))
+    best_no_bid = Column(DECIMAL(10, 4))
+    best_no_ask = Column(DECIMAL(10, 4))
+
+    # Spreads (in cents)
+    yes_spread = Column(DECIMAL(10, 4))
+    no_spread = Column(DECIMAL(10, 4))
+
+    # Liquidity metrics (total contracts in top N levels)
+    yes_liquidity = Column(Integer)
+    no_liquidity = Column(Integer)
+
+    # Number of orderbook levels captured
+    yes_levels = Column(Integer)
+    no_levels = Column(Integer)
+
+    # Full orderbook data as JSON (top 6 levels)
+    # Format: [[price, size], [price, size], ...]
+    yes_bids = Column(JSON)
+    no_bids = Column(JSON)
+
+    # Contract times
+    contract_start_time = Column(TIMESTAMP)  # When the contract/market opened
+    contract_end_time = Column(TIMESTAMP)  # When the contract expires
+    contract_time_window = Column(String(20))  # Time window in "HH:MM to HH:MM" format
+
+    # Volatility metrics
+    implied_volatility = Column(DECIMAL(10, 4))  # Implied vol estimate from market prices (annualized %)
+    realized_vol_30min = Column(DECIMAL(10, 4))  # Realized volatility last 30 minutes (annualized %)
+    realized_vol_10min = Column(DECIMAL(10, 4))  # Realized volatility last 10 minutes (annualized %)
+    realized_vol_yesterday_same_hour = Column(DECIMAL(10, 4))  # RV from same hour yesterday (annualized %)
+    realized_vol_last_week_same_hour = Column(DECIMAL(10, 4))  # RV from same hour last week (annualized %)
+    implied_volatility_rank = Column(DECIMAL(5, 2))  # IV Rank (0-100, where current IV stands in its range)
+
+    # Option Greeks (for binary options)
+    delta = Column(DECIMAL(10, 6))  # Rate of change of option value w.r.t. underlying price
+    gamma = Column(DECIMAL(10, 6))  # Rate of change of delta w.r.t. underlying price
+    vega = Column(DECIMAL(10, 6))  # Rate of change of option value w.r.t. volatility
+    theta = Column(DECIMAL(10, 6))  # Rate of change of option value w.r.t. time
+    vanna = Column(DECIMAL(10, 6))  # Cross-derivative: ∂Delta/∂σ = ∂²V/∂S∂σ
+    volga = Column(DECIMAL(10, 6))  # Second derivative w.r.t. volatility: ∂²V/∂σ² (also called vomma)
+
+    __table_args__ = (
+        Index('idx_kalshi_ob_timestamp', 'timestamp'),
+        Index('idx_kalshi_ob_ticker', 'ticker'),
+        Index('idx_kalshi_ob_strike', 'strike_price'),
+        Index('idx_kalshi_ob_timestamp_strike', 'timestamp', 'strike_price'),
+        Index('idx_kalshi_ob_moneyness', 'moneyness_category'),
+    )
+
+    def __repr__(self):
+        return f"<KalshiOrderbookSnapshot(ticker={self.ticker}, strike=${self.strike_price}, moneyness={self.moneyness_category})>"
+
+
+class BtcPriceCandle(Base):
+    """OHLC candlestick data for BTC price across various timeframes"""
+    __tablename__ = 'btc_price_candles'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(TIMESTAMP, nullable=False, index=True)  # Start of the candle period
+
+    # Timeframe
+    timeframe = Column(String(10), nullable=False, index=True)  # '1min', '5min', '15min', '30min', '1hour', '1day', '1week'
+
+    # Exchange/Source
+    exchange = Column(String(50), nullable=False, index=True)  # 'coinbase', 'binance', 'kalshi', etc.
+    symbol = Column(String(20), nullable=False)  # 'BTC-USD', 'BTCUSDT', etc.
+
+    # OHLC data
+    open = Column(DECIMAL(18, 8), nullable=False)
+    high = Column(DECIMAL(18, 8), nullable=False)
+    low = Column(DECIMAL(18, 8), nullable=False)
+    close = Column(DECIMAL(18, 8), nullable=False)
+
+    # Volume
+    volume = Column(DECIMAL(18, 8))  # Total volume in the period
+
+    # Additional metrics
+    num_trades = Column(Integer)  # Number of trades in this candle
+
+    __table_args__ = (
+        Index('idx_btc_candle_timestamp_timeframe', 'timestamp', 'timeframe'),
+        Index('idx_btc_candle_exchange_timeframe', 'exchange', 'timeframe'),
+        Index('idx_btc_candle_full', 'exchange', 'timeframe', 'timestamp'),
+        # Unique constraint to prevent duplicate candles
+        UniqueConstraint('timestamp', 'timeframe', 'exchange', 'symbol', name='uq_btc_candle'),
+    )
+
+    def __repr__(self):
+        return f"<BtcPriceCandle(exchange={self.exchange}, timeframe={self.timeframe}, timestamp={self.timestamp}, close=${self.close})>"

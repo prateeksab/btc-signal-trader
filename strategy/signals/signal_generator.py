@@ -49,6 +49,17 @@ class TradingSignal:
     orderbook_imbalance: Optional[float] = None
     price: Optional[float] = None
 
+    # New signal factors
+    spread_pct: Optional[float] = None
+    spread_signal: Optional[str] = None
+    trade_intensity_tps: Optional[float] = None
+    trade_intensity_aggression: Optional[float] = None
+    intensity_signal: Optional[str] = None
+    futures_basis_pct: Optional[float] = None
+    basis_signal: Optional[str] = None
+    funding_rate: Optional[float] = None
+    funding_rate_signal: Optional[str] = None
+
     # Signal details
     reasons: List[str] = None
     warnings: List[str] = None
@@ -68,6 +79,10 @@ class SignalGenerator:
     - CVD trend (bullish/bearish momentum)
     - Orderbook imbalance (buying/selling pressure)
     - Price action
+    - Spread (market liquidity)
+    - Trade intensity (market activity)
+    - Futures basis (contango/backwardation)
+    - Funding rate (sentiment indicator)
     """
 
     def __init__(self):
@@ -83,12 +98,48 @@ class SignalGenerator:
         self.price_history: List[float] = []
         self.price_window = 20
 
-        # Thresholds
+        # Spread tracking
+        self.spread_history: List[float] = []
+        self.spread_window = 10
+
+        # Trade intensity tracking
+        self.intensity_history: List[Dict] = []
+        self.intensity_window = 10
+
+        # Futures basis tracking
+        self.basis_history: List[float] = []
+        self.basis_window = 10
+
+        # Funding rate tracking
+        self.funding_rate_history: List[float] = []
+        self.funding_rate_window = 10
+
+        # Thresholds - Orderbook
         self.strong_imbalance_threshold = 60  # ±60%
         self.moderate_imbalance_threshold = 30  # ±30%
+
+        # Thresholds - CVD
         self.strong_cvd_threshold = 10  # 10 BTC
 
-        logger.info("SignalGenerator initialized")
+        # Thresholds - Spread (basis points)
+        self.tight_spread_threshold = 0.01  # 0.01% = tight spread (good liquidity)
+        self.wide_spread_threshold = 0.05   # 0.05% = wide spread (poor liquidity)
+
+        # Thresholds - Trade Intensity
+        self.high_intensity_threshold = 5.0   # TPS
+        self.low_intensity_threshold = 1.0    # TPS
+        self.aggressive_buying_threshold = 0.3  # Aggression score
+        self.aggressive_selling_threshold = -0.3
+
+        # Thresholds - Futures Basis
+        self.strong_contango_threshold = 0.5    # 0.5% basis
+        self.strong_backwardation_threshold = -0.5
+
+        # Thresholds - Funding Rate
+        self.high_funding_threshold = 0.0001     # 0.01% per 8h
+        self.negative_funding_threshold = -0.0001
+
+        logger.info("SignalGenerator initialized with 6 signal sources")
 
     def update_cvd(self, cvd_value: float):
         """
@@ -128,6 +179,58 @@ class SignalGenerator:
         # Keep only recent history
         if len(self.price_history) > self.price_window:
             self.price_history.pop(0)
+
+    def update_spread(self, spread_pct: float):
+        """
+        Update spread percentage and maintain history.
+
+        Args:
+            spread_pct: Spread as percentage of price
+        """
+        self.spread_history.append(spread_pct)
+
+        # Keep only recent history
+        if len(self.spread_history) > self.spread_window:
+            self.spread_history.pop(0)
+
+    def update_trade_intensity(self, intensity_data: Dict):
+        """
+        Update trade intensity metrics and maintain history.
+
+        Args:
+            intensity_data: Dict with keys: tps, aggression_score, buy_sell_ratio
+        """
+        self.intensity_history.append(intensity_data)
+
+        # Keep only recent history
+        if len(self.intensity_history) > self.intensity_window:
+            self.intensity_history.pop(0)
+
+    def update_futures_basis(self, basis_pct: float):
+        """
+        Update futures basis percentage and maintain history.
+
+        Args:
+            basis_pct: Futures-spot basis as percentage
+        """
+        self.basis_history.append(basis_pct)
+
+        # Keep only recent history
+        if len(self.basis_history) > self.basis_window:
+            self.basis_history.pop(0)
+
+    def update_funding_rate(self, funding_rate: float):
+        """
+        Update funding rate and maintain history.
+
+        Args:
+            funding_rate: Current funding rate
+        """
+        self.funding_rate_history.append(funding_rate)
+
+        # Keep only recent history
+        if len(self.funding_rate_history) > self.funding_rate_window:
+            self.funding_rate_history.pop(0)
 
     def get_cvd_trend(self) -> Optional[str]:
         """
@@ -198,6 +301,105 @@ class SignalGenerator:
 
         return None
 
+    def get_spread_signal(self) -> Optional[str]:
+        """
+        Analyze spread for liquidity conditions.
+
+        Returns:
+            'tight' (good liquidity), 'normal', 'wide' (poor liquidity)
+        """
+        if not self.spread_history:
+            return None
+
+        current_spread = self.spread_history[-1]
+
+        if current_spread <= self.tight_spread_threshold:
+            return 'tight'
+        elif current_spread >= self.wide_spread_threshold:
+            return 'wide'
+        else:
+            return 'normal'
+
+    def get_intensity_signal(self) -> Optional[str]:
+        """
+        Analyze trade intensity for market activity.
+
+        Returns:
+            'high_buying', 'moderate_buying', 'neutral', 'moderate_selling', 'high_selling'
+        """
+        if not self.intensity_history:
+            return None
+
+        current = self.intensity_history[-1]
+        tps = current.get('tps', 0)
+        aggression = current.get('aggression_score', 0)
+
+        # High intensity with aggressive buying
+        if tps > self.high_intensity_threshold and aggression > self.aggressive_buying_threshold:
+            return 'high_buying'
+
+        # Moderate intensity with buying
+        elif aggression > self.aggressive_buying_threshold:
+            return 'moderate_buying'
+
+        # High intensity with aggressive selling
+        elif tps > self.high_intensity_threshold and aggression < self.aggressive_selling_threshold:
+            return 'high_selling'
+
+        # Moderate intensity with selling
+        elif aggression < self.aggressive_selling_threshold:
+            return 'moderate_selling'
+
+        else:
+            return 'neutral'
+
+    def get_basis_signal(self) -> Optional[str]:
+        """
+        Analyze futures basis for market sentiment.
+
+        Returns:
+            'strong_contango', 'contango', 'neutral', 'backwardation', 'strong_backwardation'
+        """
+        if not self.basis_history:
+            return None
+
+        current_basis = self.basis_history[-1]
+
+        if current_basis >= self.strong_contango_threshold:
+            return 'strong_contango'
+        elif current_basis > 0:
+            return 'contango'
+        elif current_basis <= self.strong_backwardation_threshold:
+            return 'strong_backwardation'
+        elif current_basis < 0:
+            return 'backwardation'
+        else:
+            return 'neutral'
+
+    def get_funding_rate_signal(self) -> Optional[str]:
+        """
+        Analyze funding rate for sentiment.
+
+        Returns:
+            'high_long_pressure', 'moderate_long_pressure', 'neutral',
+            'moderate_short_pressure', 'high_short_pressure'
+        """
+        if not self.funding_rate_history:
+            return None
+
+        current_rate = self.funding_rate_history[-1]
+
+        if current_rate >= self.high_funding_threshold:
+            return 'high_long_pressure'
+        elif current_rate > 0:
+            return 'moderate_long_pressure'
+        elif current_rate <= self.negative_funding_threshold:
+            return 'high_short_pressure'
+        elif current_rate < 0:
+            return 'moderate_short_pressure'
+        else:
+            return 'neutral'
+
     def calculate_confidence(self, signal_type: SignalType, reasons: List[str]) -> tuple:
         """
         Calculate confidence level and score based on signal strength.
@@ -244,7 +446,11 @@ class SignalGenerator:
         self,
         cvd: Optional[float] = None,
         orderbook_imbalance: Optional[float] = None,
-        price: Optional[float] = None
+        price: Optional[float] = None,
+        spread_pct: Optional[float] = None,
+        trade_intensity: Optional[Dict] = None,
+        futures_basis_pct: Optional[float] = None,
+        funding_rate: Optional[float] = None
     ) -> TradingSignal:
         """
         Generate trading signal from current market data.
@@ -253,6 +459,10 @@ class SignalGenerator:
             cvd: Current CVD value
             orderbook_imbalance: Current orderbook imbalance (-100 to +100)
             price: Current BTC price
+            spread_pct: Bid-ask spread as percentage
+            trade_intensity: Dict with tps, aggression_score, buy_sell_ratio
+            futures_basis_pct: Futures-spot basis as percentage
+            funding_rate: Current funding rate
 
         Returns:
             TradingSignal with type, confidence, and reasoning
@@ -264,6 +474,14 @@ class SignalGenerator:
             self.update_orderbook(orderbook_imbalance)
         if price is not None:
             self.update_price(price)
+        if spread_pct is not None:
+            self.update_spread(spread_pct)
+        if trade_intensity is not None:
+            self.update_trade_intensity(trade_intensity)
+        if futures_basis_pct is not None:
+            self.update_futures_basis(futures_basis_pct)
+        if funding_rate is not None:
+            self.update_funding_rate(funding_rate)
 
         # Collect signal factors
         reasons = []
@@ -273,53 +491,122 @@ class SignalGenerator:
         current_cvd = self.cvd_history[-1] if self.cvd_history else None
         current_imbalance = self.imbalance_history[-1] if self.imbalance_history else None
         current_price = self.price_history[-1] if self.price_history else None
+        current_spread = self.spread_history[-1] if self.spread_history else None
+        current_intensity = self.intensity_history[-1] if self.intensity_history else None
+        current_basis = self.basis_history[-1] if self.basis_history else None
+        current_funding = self.funding_rate_history[-1] if self.funding_rate_history else None
 
-        # Analyze CVD trend
+        # Analyze all signals
         cvd_trend = self.get_cvd_trend()
-
-        # Analyze orderbook
         orderbook_signal = self.get_orderbook_signal()
+        spread_signal = self.get_spread_signal()
+        intensity_signal = self.get_intensity_signal()
+        basis_signal = self.get_basis_signal()
+        funding_signal = self.get_funding_rate_signal()
 
         # Check for divergences
         divergence = self.check_divergence()
         if divergence:
             warnings.append(divergence)
 
-        # Determine signal type
+        # Determine signal type using scoring system
         signal_type = SignalType.NEUTRAL
+        buy_score = 0
+        sell_score = 0
 
-        # STRONG BUY conditions
-        if (cvd_trend == 'bullish' and orderbook_signal == 'strong_buy'):
-            signal_type = SignalType.STRONG_BUY
+        # Score CVD (weight: 2 points per direction)
+        if cvd_trend == 'bullish':
+            buy_score += 2
             reasons.append(f"Bullish CVD trend")
-            reasons.append(f"Strong orderbook buying pressure ({current_imbalance:+.1f}%)")
-
-        # BUY conditions
-        elif (cvd_trend == 'bullish' and orderbook_signal in ['buy', 'neutral']) or \
-             (cvd_trend == 'neutral' and orderbook_signal == 'strong_buy'):
-            signal_type = SignalType.BUY
-            if cvd_trend == 'bullish':
-                reasons.append(f"Bullish CVD trend")
-            if orderbook_signal in ['buy', 'strong_buy']:
-                reasons.append(f"Orderbook buying pressure ({current_imbalance:+.1f}%)")
-
-        # STRONG SELL conditions
-        elif (cvd_trend == 'bearish' and orderbook_signal == 'strong_sell'):
-            signal_type = SignalType.STRONG_SELL
+        elif cvd_trend == 'bearish':
+            sell_score += 2
             reasons.append(f"Bearish CVD trend")
-            reasons.append(f"Strong orderbook selling pressure ({current_imbalance:+.1f}%)")
 
-        # SELL conditions
-        elif (cvd_trend == 'bearish' and orderbook_signal in ['sell', 'neutral']) or \
-             (cvd_trend == 'neutral' and orderbook_signal == 'strong_sell'):
+        # Score Orderbook (weight: 3 points for strong, 1.5 for moderate)
+        if orderbook_signal == 'strong_buy':
+            buy_score += 3
+            reasons.append(f"Strong orderbook buying pressure ({current_imbalance:+.1f}%)")
+        elif orderbook_signal == 'buy':
+            buy_score += 1.5
+            reasons.append(f"Orderbook buying pressure ({current_imbalance:+.1f}%)")
+        elif orderbook_signal == 'strong_sell':
+            sell_score += 3
+            reasons.append(f"Strong orderbook selling pressure ({current_imbalance:+.1f}%)")
+        elif orderbook_signal == 'sell':
+            sell_score += 1.5
+            reasons.append(f"Orderbook selling pressure ({current_imbalance:+.1f}%)")
+
+        # Score Trade Intensity (weight: 2 points for high, 1 for moderate)
+        if intensity_signal == 'high_buying':
+            buy_score += 2
+            reasons.append(f"High intensity buying pressure")
+        elif intensity_signal == 'moderate_buying':
+            buy_score += 1
+            reasons.append(f"Moderate buying intensity")
+        elif intensity_signal == 'high_selling':
+            sell_score += 2
+            reasons.append(f"High intensity selling pressure")
+        elif intensity_signal == 'moderate_selling':
+            sell_score += 1
+            reasons.append(f"Moderate selling intensity")
+
+        # Score Futures Basis (weight: 1.5 points)
+        # Contango = bullish short-term, backwardation = bearish short-term
+        if basis_signal == 'strong_contango':
+            buy_score += 1.5
+            reasons.append(f"Strong contango ({current_basis:+.2f}%) - bullish sentiment")
+        elif basis_signal == 'contango':
+            buy_score += 0.75
+            reasons.append(f"Contango ({current_basis:+.2f}%)")
+        elif basis_signal == 'strong_backwardation':
+            sell_score += 1.5
+            reasons.append(f"Strong backwardation ({current_basis:+.2f}%) - bearish sentiment")
+        elif basis_signal == 'backwardation':
+            sell_score += 0.75
+            reasons.append(f"Backwardation ({current_basis:+.2f}%)")
+
+        # Score Funding Rate (weight: 1.5 points)
+        # High funding = contrarian bearish (longs overextended)
+        # Negative funding = contrarian bullish (shorts overextended)
+        if funding_signal == 'high_long_pressure':
+            sell_score += 1.5
+            warnings.append(f"⚠️  High funding rate ({current_funding:.6f}) - potential long squeeze")
+        elif funding_signal == 'moderate_long_pressure':
+            sell_score += 0.75
+        elif funding_signal == 'high_short_pressure':
+            buy_score += 1.5
+            reasons.append(f"Negative funding rate ({current_funding:.6f}) - shorts paying longs")
+        elif funding_signal == 'moderate_short_pressure':
+            buy_score += 0.75
+            reasons.append(f"Shorts under pressure")
+
+        # Spread warning (doesn't affect signal but adds warning)
+        if spread_signal == 'wide':
+            warnings.append(f"⚠️  Wide spread ({current_spread:.4f}%) - poor liquidity")
+        elif spread_signal == 'tight':
+            reasons.append(f"Tight spread ({current_spread:.4f}%) - good liquidity")
+
+        # Determine signal type based on scores
+        # Thresholds: Strong = 5+, Moderate = 2.5+
+        net_score = buy_score - sell_score
+
+        if buy_score >= 5 and net_score >= 3:
+            signal_type = SignalType.STRONG_BUY
+        elif buy_score >= 2.5 and net_score >= 1.5:
+            signal_type = SignalType.BUY
+        elif sell_score >= 5 and net_score <= -3:
+            signal_type = SignalType.STRONG_SELL
+        elif sell_score >= 2.5 and net_score <= -1.5:
             signal_type = SignalType.SELL
-            if cvd_trend == 'bearish':
-                reasons.append(f"Bearish CVD trend")
-            if orderbook_signal in ['sell', 'strong_sell']:
-                reasons.append(f"Orderbook selling pressure ({current_imbalance:+.1f}%)")
+        else:
+            signal_type = SignalType.NEUTRAL
 
         # Calculate confidence
         confidence, confidence_score = self.calculate_confidence(signal_type, reasons)
+
+        # Extract intensity metrics if available
+        intensity_tps = current_intensity.get('tps') if current_intensity else None
+        intensity_aggression = current_intensity.get('aggression_score') if current_intensity else None
 
         # Create signal
         signal = TradingSignal(
@@ -331,6 +618,15 @@ class SignalGenerator:
             cvd_trend=cvd_trend,
             orderbook_imbalance=current_imbalance,
             price=current_price,
+            spread_pct=current_spread,
+            spread_signal=spread_signal,
+            trade_intensity_tps=intensity_tps,
+            trade_intensity_aggression=intensity_aggression,
+            intensity_signal=intensity_signal,
+            futures_basis_pct=current_basis,
+            basis_signal=basis_signal,
+            funding_rate=current_funding,
+            funding_rate_signal=funding_signal,
             reasons=reasons,
             warnings=warnings
         )
@@ -369,6 +665,14 @@ class SignalGenerator:
             print(f"CVD: {signal.cvd_value:+,.4f} BTC ({signal.cvd_trend or 'unknown'} trend)")
         if signal.orderbook_imbalance is not None:
             print(f"Orderbook Imbalance: {signal.orderbook_imbalance:+.2f}%")
+        if signal.spread_pct is not None:
+            print(f"Spread: {signal.spread_pct:.4f}% ({signal.spread_signal or 'unknown'})")
+        if signal.trade_intensity_tps is not None:
+            print(f"Trade Intensity: {signal.trade_intensity_tps:.2f} TPS (aggression: {signal.trade_intensity_aggression:+.2f})")
+        if signal.futures_basis_pct is not None:
+            print(f"Futures Basis: {signal.futures_basis_pct:+.2f}% ({signal.basis_signal or 'unknown'})")
+        if signal.funding_rate is not None:
+            print(f"Funding Rate: {signal.funding_rate:.6f} ({signal.funding_rate_signal or 'unknown'})")
 
         # Reasons
         if signal.reasons:

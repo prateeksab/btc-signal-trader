@@ -28,6 +28,7 @@ class CollectorManager:
     """Manages all data collector processes"""
 
     COLLECTORS = [
+        ('Binance Trades', 'venv/bin/python data/collectors/binance_trades.py'),
         ('Coinbase Trades', 'venv/bin/python data/collectors/coinbase_trades.py'),
         ('Kraken Trades', 'venv/bin/python data/collectors/kraken_trades.py'),
         ('Coinbase Orderbook', 'venv/bin/python data/collectors/coinbase_orderbook.py'),
@@ -35,7 +36,7 @@ class CollectorManager:
         ('Binance Perpetual', 'venv/bin/python data/collectors/binance_perpetual.py'),
         ('Coinbase Perpetual', 'venv/bin/python data/collectors/coinbase_perpetual.py'),
         ('Binance Funding Rate', 'venv/bin/python data/collectors/binance_funding_rate.py'),
-        ('Kalshi Markets', 'venv/bin/python data/collectors/kalshi_markets.py --continuous'),
+        ('Kalshi Orderbook', 'venv/bin/python data/collectors/kalshi_orderbook.py --continuous 5'),
         ('Trade Intensity', 'venv/bin/python data/processors/collector_service.py'),
     ]
 

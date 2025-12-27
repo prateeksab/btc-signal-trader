@@ -10,12 +10,19 @@ import json
 import logging
 import signal
 import sys
+import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from collections import OrderedDict
+from decimal import Decimal
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
+# Add project root to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+from data.storage.database import db_manager
+from data.storage.models import OrderbookSnapshot
 
 # Configure logging
 logging.basicConfig(
@@ -218,6 +225,49 @@ class KrakenOrderBookCollector:
             logger.error(f"Error calculating spread: {e}")
             return None
 
+    def save_to_database(self):
+        """Save order book snapshot to database."""
+        if not self.is_snapshot_received:
+            return
+
+        try:
+            spread = self.get_spread()
+            imbalance = self.calculate_imbalance()
+
+            if not spread:
+                return
+
+            best_bid = list(self.bids.keys())[0] if self.bids else None
+            best_ask = list(self.asks.keys())[0] if self.asks else None
+
+            if not best_bid or not best_ask:
+                return
+
+            # Calculate total volumes
+            total_bid_volume = sum(list(self.bids.values())[:5])
+            total_ask_volume = sum(list(self.asks.values())[:5])
+
+            with db_manager.get_session() as session:
+                snapshot = OrderbookSnapshot(
+                    timestamp=datetime.utcnow(),
+                    exchange='kraken',
+                    symbol='XBT/USD',
+                    best_bid=Decimal(str(best_bid)),
+                    best_ask=Decimal(str(best_ask)),
+                    spread=Decimal(str(spread['spread'])),
+                    spread_pct=Decimal(str(spread['spread_pct'])),
+                    total_bid_volume=Decimal(str(total_bid_volume)),
+                    total_ask_volume=Decimal(str(total_ask_volume)),
+                    imbalance=Decimal(str(imbalance * 100)) if imbalance is not None else None,
+                    bids_json={'bids': [[str(p), str(v)] for p, v in list(self.bids.items())[:10]]},
+                    asks_json={'asks': [[str(p), str(v)] for p, v in list(self.asks.items())[:10]]},
+                    depth_levels=min(len(self.bids), len(self.asks))
+                )
+                session.add(snapshot)
+
+        except Exception as e:
+            logger.error(f"Error saving orderbook to database: {e}")
+
     def print_order_book_snapshot(self):
         """Print current order book state to console."""
         if not self.is_snapshot_received:
@@ -228,6 +278,9 @@ class KrakenOrderBookCollector:
 
         if not spread:
             return
+
+        # Save to database
+        self.save_to_database()
 
         print(f"\n{'='*80}")
         print(f"Order Book Snapshot - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
